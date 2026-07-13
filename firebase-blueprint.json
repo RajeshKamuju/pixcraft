@@ -1,0 +1,62 @@
+{
+  "entities": {
+    "Generation": {
+      "title": "Generation",
+      "description": "Stores user-generated image template variation history and usage log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "templateType": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["pending", "success", "failed"] },
+        "errorType": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "templateStyle": { "type": "string" },
+        "name": { "type": "string" },
+        "caption": { "type": "string" },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["userId", "templateType", "timestamp", "status"]
+    },
+    "GlobalStats": {
+      "title": "GlobalStats",
+      "description": "Stores global stats like total images created",
+      "type": "object",
+      "properties": {
+        "imagesCreated": { "type": "integer" }
+      },
+      "required": ["imagesCreated"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Stores user profile and onboarding/usage state",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "signupDate": { "type": "string", "format": "date-time" },
+        "lastLoginDate": { "type": "string", "format": "date-time" },
+        "totalGenerations": { "type": "integer" },
+        "hasSeenWelcome": { "type": "boolean" },
+        "hasGeneratedOnce": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "signupDate", "lastLoginDate", "totalGenerations"]
+    }
+  },
+  "firestore": {
+    "/generations/{generationId}": {
+      "schema": "Generation",
+      "description": "User's saved generated image templates and attempt logs"
+    },
+    "/stats/{statsId}": {
+      "schema": "GlobalStats",
+      "description": "Global statistics for PixCraft (deprecated in favor of active logs count)"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and onboarding/usage states"
+    }
+  }
+}

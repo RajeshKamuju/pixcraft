@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn(uid) {
+      return request.auth != null || (uid != null && uid is string && uid.size() > 0);
+    }
+
+    function isAdmin(uid) {
+      return (request.auth != null && request.auth.token.email == 'rkamuju39@gmail.com')
+        || (uid != null && uid is string && uid.size() > 0 && exists(/databases/$(database)/documents/users/$(uid)) && get(/databases/$(database)/documents/users/$(uid)).data.email == 'rkamuju39@gmail.com');
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['name', 'email', 'signupDate', 'lastLoginDate', 'totalGenerations'])
+        && data.keys().size() <= 8
+        && data.name is string && data.name.size() <= 128
+        && data.email is string && data.email.size() <= 256
+        && data.totalGenerations is int
+        && (!data.keys().hasAny(['hasSeenWelcome']) || data.hasSeenWelcome is bool)
+        && (!data.keys().hasAny(['hasGeneratedOnce']) || data.hasGeneratedOnce is bool)
+        && (!data.keys().hasAny(['createdAt']) || data.createdAt == request.time || data.createdAt is string || data.createdAt is int);
+    }
+
+    function isValidGeneration(data) {
+      return data.keys().hasAll(['userId', 'templateType', 'timestamp', 'status'])
+        && data.keys().size() <= 12
+        && data.userId is string && data.userId.size() <= 128
+        && data.templateType is string && data.templateType.size() <= 100
+        && data.status is string && data.status.size() <= 50
+        && (!data.keys().hasAny(['errorType']) || data.errorType == null || data.errorType is string)
+        && (!data.keys().hasAny(['imageUrl']) || (data.imageUrl is string && data.imageUrl.size() <= 5000000))
+        && (!data.keys().hasAny(['templateStyle']) || (data.templateStyle is string && data.templateStyle.size() <= 100))
+        && (!data.keys().hasAny(['name']) || (data.name is string && data.name.size() <= 200))
+        && (!data.keys().hasAny(['caption']) || (data.caption is string && data.caption.size() <= 1000))
+        && (!data.keys().hasAny(['createdAt']) || data.createdAt is int || data.createdAt is string);
+    }
+
+    // Collection matches
+    match /users/{userId} {
+      allow read: if isSignedIn(userId) && (request.auth == null || userId == request.auth.uid || isAdmin(userId));
+      allow create: if isSignedIn(userId) 
+        && isValidId(userId) 
+        && (request.auth == null || userId == request.auth.uid) 
+        && isValidUser(request.resource.data)
+        && (request.resource.data.signupDate == request.time || request.resource.data.signupDate is string)
+        && (request.resource.data.lastLoginDate == request.time || request.resource.data.lastLoginDate is string)
+        && request.resource.data.totalGenerations == 0;
+      allow update: if isSignedIn(userId) 
+        && isValidId(userId) 
+        && (request.auth == null || userId == request.auth.uid || isAdmin(userId))
+        && isValidUser(request.resource.data)
+        && (isAdmin(userId) || (
+             (request.resource.data.signupDate == resource.data.signupDate || request.resource.data.signupDate is string)
+             && (request.resource.data.lastLoginDate == request.time || request.resource.data.lastLoginDate is string || request.resource.data.lastLoginDate == resource.data.lastLoginDate)
+             && (request.resource.data.totalGenerations == resource.data.totalGenerations || request.resource.data.totalGenerations == resource.data.totalGenerations + 1)
+           ));
+    }
+
+    match /generations/{generationId} {
+      allow read: if (resource != null && resource.data.status == 'success') || (isSignedIn(resource.data.userId) && (request.auth == null || resource.data.userId == request.auth.uid || isAdmin(resource.data.userId)));
+      allow create: if isSignedIn(request.resource.data.userId) 
+        && isValidId(generationId) 
+        && (request.auth == null || request.resource.data.userId == request.auth.uid) 
+        && isValidGeneration(request.resource.data);
+      allow update: if isSignedIn(resource.data.userId) 
+        && isValidId(generationId) 
+        && (request.auth == null || resource.data.userId == request.auth.uid || isAdmin(resource.data.userId))
+        && isValidGeneration(request.resource.data);
+      allow delete: if isSignedIn(resource.data.userId) 
+        && isValidId(generationId) 
+        && (request.auth == null || resource.data.userId == request.auth.uid || isAdmin(resource.data.userId));
+    }
+
+    match /stats/{statsId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+  }
+}

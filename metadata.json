@@ -1,0 +1,6 @@
+{
+  "name": "PixCraft",
+  "description": "Transform your personal photos into gorgeous festival greetings, professional ID cards, birthday posters, and elegant LinkedIn banners using Gemini image generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
