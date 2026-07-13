@@ -110,4 +110,4 @@ This project is licensed under the MIT License.
 
 ## Author
 
-Built by Rajesh — [GitHub](https://github.com/yourusername) · [Portfolio](#)
+[GitHub](https://github.com/yourusername) · [Portfolio](#)
