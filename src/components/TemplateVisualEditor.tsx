@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Undo2, Redo2, RotateCcw, Image as ImageIcon, Sliders, Palette, Move, Type, Eye, EyeOff, SlidersHorizontal } from 'lucide-react';
+import { Undo2, Redo2, RotateCcw, Image as ImageIcon, Sliders, Palette, Move, Type, Eye, EyeOff, SlidersHorizontal, AlignLeft, AlignCenter, AlignRight, Bold, Italic } from 'lucide-react';
 import { TemplateStyle } from '../types';
 
 interface TextElement {
@@ -9,6 +9,9 @@ interface TextElement {
   color: string;
   size: number;
   font: string;
+  align?: 'left' | 'center' | 'right';
+  bold?: boolean;
+  italic?: boolean;
 }
 
 interface CanvasSettings {
@@ -131,9 +134,8 @@ export function TemplateVisualEditor({
       const x = (touch.clientX - rect.left) * scaleX;
       const y = (touch.clientY - rect.top) * scaleY;
 
-      const align = style === 'linkedin' ? 'left' : 'center';
-      const hitName = isPointInText(x, y, settings.nameElement, align);
-      const hitCaption = isPointInText(x, y, settings.captionElement, align);
+      const hitName = isPointInText(x, y, settings.nameElement, getElementAlign(settings.nameElement));
+      const hitCaption = isPointInText(x, y, settings.captionElement, getElementAlign(settings.captionElement));
       const hitPhoto = isInsidePhotoSlot(x, y);
 
       if (hitName) {
@@ -447,13 +449,23 @@ export function TemplateVisualEditor({
     return false;
   };
 
-  const isPointInText = (px: number, py: number, elem: TextElement, align: 'center' | 'left') => {
+  const getElementAlign = (elem: TextElement): 'left' | 'center' | 'right' => {
+    return elem.align || (style === 'linkedin' ? 'left' : 'center');
+  };
+
+  const isPointInText = (px: number, py: number, elem: TextElement, alignment: 'left' | 'center' | 'right') => {
     const size = elem.size;
     const approxWidth = 0.55 * size * Math.max(elem.text.length, 5);
     const approxHeight = size * 1.3;
-    if (align === 'center') {
+    if (alignment === 'center') {
       const left = elem.x - approxWidth / 2;
       const right = elem.x + approxWidth / 2;
+      const top = elem.y - approxHeight / 2;
+      const bottom = elem.y + approxHeight / 2;
+      return px >= left && px <= right && py >= top && py <= bottom;
+    } else if (alignment === 'right') {
+      const left = elem.x - approxWidth;
+      const right = elem.x;
       const top = elem.y - approxHeight / 2;
       const bottom = elem.y + approxHeight / 2;
       return px >= left && px <= right && py >= top && py <= bottom;
@@ -468,10 +480,9 @@ export function TemplateVisualEditor({
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const { x, y } = getCanvasCoords(e);
-    const align = style === 'linkedin' ? 'left' : 'center';
 
-    const hitName = isPointInText(x, y, settings.nameElement, align);
-    const hitCaption = isPointInText(x, y, settings.captionElement, align);
+    const hitName = isPointInText(x, y, settings.nameElement, getElementAlign(settings.nameElement));
+    const hitCaption = isPointInText(x, y, settings.captionElement, getElementAlign(settings.captionElement));
     const hitPhoto = isInsidePhotoSlot(x, y);
 
     if (hitName) {
@@ -509,9 +520,8 @@ export function TemplateVisualEditor({
     const { x, y } = getCanvasCoords(e);
     
     if (!draggedItem) {
-      const align = style === 'linkedin' ? 'left' : 'center';
-      const hitName = isPointInText(x, y, settings.nameElement, align);
-      const hitCaption = isPointInText(x, y, settings.captionElement, align);
+      const hitName = isPointInText(x, y, settings.nameElement, getElementAlign(settings.nameElement));
+      const hitCaption = isPointInText(x, y, settings.captionElement, getElementAlign(settings.captionElement));
       const hitPhoto = isInsidePhotoSlot(x, y);
 
       if (hitName) {
@@ -603,7 +613,8 @@ export function TemplateVisualEditor({
   const captionLeftPct = (captionX / canvasW) * 100;
   const captionTopPct = (captionY / canvasH) * 100;
 
-  const textAlignment = isLinkedin ? 'left' : 'center';
+  const nameAlign = getElementAlign(settings.nameElement);
+  const captionAlign = getElementAlign(settings.captionElement);
 
   const renderFloatingToolbar = () => {
     if (!selectedElement) return null;
@@ -654,8 +665,77 @@ export function TemplateVisualEditor({
           </span>
         </div>
 
+        {/* Style (Bold & Italic) Toggles */}
+        <div className="flex items-center border-l border-zinc-700 pl-3 gap-1">
+          <button
+            onClick={() => {
+              const currentBold = elem.bold !== undefined ? elem.bold : (selectedElement === 'name');
+              updateSelectedText('bold', !currentBold);
+            }}
+            className={`p-1.5 rounded transition-colors ${
+              (elem.bold !== undefined ? elem.bold : (selectedElement === 'name'))
+                ? 'bg-[#C9822E] text-white' 
+                : 'hover:bg-zinc-800 text-zinc-300'
+            }`}
+            title="Toggle Bold"
+          >
+            <Bold className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => {
+              const currentItalic = elem.italic || false;
+              updateSelectedText('italic', !currentItalic);
+            }}
+            className={`p-1.5 rounded transition-colors ${
+              elem.italic 
+                ? 'bg-[#C9822E] text-white' 
+                : 'hover:bg-zinc-800 text-zinc-300'
+            }`}
+            title="Toggle Italic"
+          >
+            <Italic className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Alignment Toggles */}
+        <div className="flex items-center border-l border-zinc-700 pl-3 gap-1">
+          <button
+            onClick={() => updateSelectedText('align', 'left')}
+            className={`p-1.5 rounded transition-colors ${
+              (elem.align || (style === 'linkedin' ? 'left' : 'center')) === 'left'
+                ? 'bg-[#C9822E] text-white' 
+                : 'hover:bg-zinc-800 text-zinc-300'
+            }`}
+            title="Align Left"
+          >
+            <AlignLeft className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => updateSelectedText('align', 'center')}
+            className={`p-1.5 rounded transition-colors ${
+              (elem.align || (style === 'linkedin' ? 'left' : 'center')) === 'center'
+                ? 'bg-[#C9822E] text-white' 
+                : 'hover:bg-zinc-800 text-zinc-300'
+            }`}
+            title="Align Center"
+          >
+            <AlignCenter className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => updateSelectedText('align', 'right')}
+            className={`p-1.5 rounded transition-colors ${
+              (elem.align || (style === 'linkedin' ? 'left' : 'center')) === 'right'
+                ? 'bg-[#C9822E] text-white' 
+                : 'hover:bg-zinc-800 text-zinc-300'
+            }`}
+            title="Align Right"
+          >
+            <AlignRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
         {/* Color Picker Bubble */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 border-l border-zinc-700 pl-3">
           {['#FFFFFF', '#FFE6AF', '#0F172A', '#10B981', '#EC4899', '#38BDF8', '#FBBF24'].slice(0, 5).map(color => (
             <button
               key={color}
@@ -789,9 +869,9 @@ export function TemplateVisualEditor({
               style={{
                 left: `${nameLeftPct}%`,
                 top: `${nameTopPct}%`,
-                transform: `translate(${textAlignment === 'center' ? '-50%' : '0'}, -50%)`,
+                transform: `translate(${nameAlign === 'center' ? '-50%' : nameAlign === 'right' ? '-100%' : '0'}, -50%)`,
                 width: isLinkedin ? '60%' : '80%',
-                textAlign: textAlignment
+                textAlign: nameAlign
               }}
               onClick={(e) => {
                 e.stopPropagation();
@@ -803,12 +883,14 @@ export function TemplateVisualEditor({
                   type="text"
                   value={settings.nameElement.text}
                   onChange={(e) => updateSelectedText('text', e.target.value)}
-                  className="w-full bg-transparent focus:outline-none focus:ring-0 font-bold uppercase caret-[#38BDF8] border-0 p-0"
+                  className="w-full bg-transparent focus:outline-none focus:ring-0 uppercase caret-[#38BDF8] border-0 p-0"
                   style={{
                     fontFamily: settings.nameElement.font,
                     fontSize: `${settings.nameElement.size * (containerWidth / canvasW)}px`,
                     color: settings.nameElement.color,
-                    textAlign: textAlignment
+                    textAlign: nameAlign,
+                    fontWeight: settings.nameElement.bold !== false ? 'bold' : 'normal',
+                    fontStyle: settings.nameElement.italic ? 'italic' : 'normal'
                   }}
                   autoFocus
                 />
@@ -818,7 +900,8 @@ export function TemplateVisualEditor({
                     fontFamily: settings.nameElement.font,
                     fontSize: `${settings.nameElement.size * (containerWidth / canvasW)}px`,
                     color: settings.nameElement.color,
-                    fontWeight: 'bold',
+                    fontWeight: settings.nameElement.bold !== false ? 'bold' : 'normal',
+                    fontStyle: settings.nameElement.italic ? 'italic' : 'normal',
                     textTransform: 'uppercase'
                   }}
                 >
@@ -849,9 +932,9 @@ export function TemplateVisualEditor({
               style={{
                 left: `${captionLeftPct}%`,
                 top: `${captionTopPct}%`,
-                transform: `translate(${textAlignment === 'center' ? '-50%' : '0'}, -50%)`,
+                transform: `translate(${captionAlign === 'center' ? '-50%' : captionAlign === 'right' ? '-100%' : '0'}, -50%)`,
                 width: isLinkedin ? '55%' : '75%',
-                textAlign: textAlignment
+                textAlign: captionAlign
               }}
               onClick={(e) => {
                 e.stopPropagation();
@@ -867,7 +950,9 @@ export function TemplateVisualEditor({
                     fontFamily: settings.captionElement.font,
                     fontSize: `${settings.captionElement.size * (containerWidth / canvasW)}px`,
                     color: settings.captionElement.color,
-                    textAlign: textAlignment,
+                    textAlign: captionAlign,
+                    fontWeight: settings.captionElement.bold ? 'bold' : 'normal',
+                    fontStyle: settings.captionElement.italic ? 'italic' : 'normal',
                     height: 'auto',
                     minHeight: '2em'
                   }}
@@ -880,6 +965,8 @@ export function TemplateVisualEditor({
                     fontFamily: settings.captionElement.font,
                     fontSize: `${settings.captionElement.size * (containerWidth / canvasW)}px`,
                     color: settings.captionElement.color,
+                    fontWeight: settings.captionElement.bold ? 'bold' : 'normal',
+                    fontStyle: settings.captionElement.italic ? 'italic' : 'normal',
                     whiteSpace: 'pre-wrap',
                     lineHeight: 'normal'
                   }}
@@ -1169,6 +1256,97 @@ export function TemplateVisualEditor({
                       onChange={(e) => updateSelectedText('color', e.target.value)}
                       className="w-7 h-7 p-0 bg-transparent border border-zinc-300 cursor-pointer"
                     />
+                  </div>
+                </div>
+
+                {/* Formatting Style (Bold/Italic) & Alignment */}
+                <div className="flex flex-row gap-5">
+                  {/* Style Toggles */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-mono font-bold text-zinc-600 uppercase block">Style</label>
+                    <div className="flex items-center gap-1 bg-zinc-50 border border-[#E4E1D8] p-1 h-9 rounded-sm">
+                      <button
+                        onClick={() => {
+                          const elem = selectedElement === 'name' ? settings.nameElement : settings.captionElement;
+                          const currentBold = elem.bold !== undefined ? elem.bold : (selectedElement === 'name');
+                          updateSelectedText('bold', !currentBold);
+                        }}
+                        className={`px-2.5 py-1 text-xs font-mono font-bold border rounded-sm transition-colors ${
+                          ((selectedElement === 'name' ? settings.nameElement.bold : settings.captionElement.bold) !== undefined
+                            ? (selectedElement === 'name' ? settings.nameElement.bold : settings.captionElement.bold)
+                            : (selectedElement === 'name'))
+                              ? 'bg-[#1B2A4A] text-white border-[#1B2A4A]'
+                              : 'hover:bg-zinc-100 text-zinc-700 border-transparent'
+                        }`}
+                        title="Toggle Bold"
+                      >
+                        B
+                      </button>
+                      <button
+                        onClick={() => {
+                          const elem = selectedElement === 'name' ? settings.nameElement : settings.captionElement;
+                          const currentItalic = elem.italic || false;
+                          updateSelectedText('italic', !currentItalic);
+                        }}
+                        className={`px-2.5 py-1 text-xs font-mono italic border rounded-sm transition-colors ${
+                          (selectedElement === 'name' ? settings.nameElement.italic : settings.captionElement.italic)
+                            ? 'bg-[#1B2A4A] text-white border-[#1B2A4A]'
+                            : 'hover:bg-zinc-100 text-zinc-700 border-transparent'
+                        }`}
+                        title="Toggle Italic"
+                      >
+                        I
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Align Toggles */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-mono font-bold text-zinc-600 uppercase block">Alignment</label>
+                    <div className="flex items-center bg-zinc-50 border border-[#E4E1D8] p-1 h-9 rounded-sm">
+                      <button
+                        onClick={() => updateSelectedText('align', 'left')}
+                        className={`p-1 border rounded-sm transition-colors ${
+                          (selectedElement === 'name' 
+                            ? (settings.nameElement.align || (style === 'linkedin' ? 'left' : 'center'))
+                            : (settings.captionElement.align || (style === 'linkedin' ? 'left' : 'center'))
+                          ) === 'left'
+                            ? 'bg-[#1B2A4A] text-white border-[#1B2A4A]'
+                            : 'hover:bg-zinc-100 text-zinc-700 border-transparent'
+                        }`}
+                        title="Align Left"
+                      >
+                        <AlignLeft className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => updateSelectedText('align', 'center')}
+                        className={`p-1 border rounded-sm transition-colors ${
+                          (selectedElement === 'name' 
+                            ? (settings.nameElement.align || (style === 'linkedin' ? 'left' : 'center'))
+                            : (settings.captionElement.align || (style === 'linkedin' ? 'left' : 'center'))
+                          ) === 'center'
+                            ? 'bg-[#1B2A4A] text-white border-[#1B2A4A]'
+                            : 'hover:bg-zinc-100 text-zinc-700 border-transparent'
+                        }`}
+                        title="Align Center"
+                      >
+                        <AlignCenter className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => updateSelectedText('align', 'right')}
+                        className={`p-1 border rounded-sm transition-colors ${
+                          (selectedElement === 'name' 
+                            ? (settings.nameElement.align || (style === 'linkedin' ? 'left' : 'center'))
+                            : (settings.captionElement.align || (style === 'linkedin' ? 'left' : 'center'))
+                          ) === 'right'
+                            ? 'bg-[#1B2A4A] text-white border-[#1B2A4A]'
+                            : 'hover:bg-zinc-100 text-zinc-700 border-transparent'
+                        }`}
+                        title="Align Right"
+                      >
+                        <AlignRight className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1716,18 +1894,23 @@ function drawCanvas(
   }
 
   // DRAW EDITABLE TEXTS OVER LAYERS
-  const align = style === 'linkedin' ? 'left' : 'center';
+  const nameAlign = settings.nameElement.align || (style === 'linkedin' ? 'left' : 'center');
+  const captionAlign = settings.captionElement.align || (style === 'linkedin' ? 'left' : 'center');
 
   // Draw Name
   ctx.fillStyle = settings.nameElement.color;
-  ctx.font = `bold ${settings.nameElement.size}px ${settings.nameElement.font}`;
-  ctx.textAlign = align;
+  const nameBoldStr = settings.nameElement.bold !== false ? 'bold ' : '';
+  const nameItalicStr = settings.nameElement.italic ? 'italic ' : '';
+  ctx.font = `${nameItalicStr}${nameBoldStr}${settings.nameElement.size}px ${settings.nameElement.font}`;
+  ctx.textAlign = nameAlign;
   ctx.fillText(settings.nameElement.text.toUpperCase(), settings.nameElement.x, settings.nameElement.y);
 
   // Draw Caption
   ctx.fillStyle = settings.captionElement.color;
-  ctx.font = `${settings.captionElement.size}px ${settings.captionElement.font}`;
-  ctx.textAlign = align;
+  const captionBoldStr = settings.captionElement.bold ? 'bold ' : '';
+  const captionItalicStr = settings.captionElement.italic ? 'italic ' : '';
+  ctx.font = `${captionItalicStr}${captionBoldStr}${settings.captionElement.size}px ${settings.captionElement.font}`;
+  ctx.textAlign = captionAlign;
   
   // Wrap text nicely for caption since it can be long
   const maxWidth = style === 'linkedin' ? 850 : 750;

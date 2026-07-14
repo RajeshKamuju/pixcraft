@@ -146,7 +146,13 @@ export default function App() {
 
   // Form States (Workspace)
   const [selectedStyle, setSelectedStyle] = useState<TemplateStyle>('festival');
-  const [templateSource, setTemplateSource] = useState<'built-in' | 'custom'>('built-in');
+  const [templateSource, setTemplateSource] = useState<'built-in' | 'custom' | 'search'>('built-in');
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null);
+  const [pexelsQuery, setPexelsQuery] = useState<string>('');
+  const [pexelsResults, setPexelsResults] = useState<any[]>([]);
+  const [isSearchingPexels, setIsSearchingPexels] = useState<boolean>(false);
+  const [pexelsError, setPexelsError] = useState<string | null>(null);
+  const [selectedPexelsPhoto, setSelectedPexelsPhoto] = useState<{ photographer: string; photographerUrl: string; url: string } | null>(null);
   const [customTemplateFile, setCustomTemplateFile] = useState<File | null>(null);
   const [customTemplatePreview, setCustomTemplatePreview] = useState<string | null>(null);
   const [customTemplateSlot, setCustomTemplateSlot] = useState<{ x: number; y: number; w: number; h: number }>({
@@ -852,13 +858,137 @@ export default function App() {
     });
   };
 
+  const handleCustomTemplateUpload = async (file: File) => {
+    setTemplateNotice(null);
+    setGenerationError(null);
+    setSelectedPexelsPhoto(null);
+    
+    // Validate file size (same 5MB limit applied to all types including PDF)
+    if (file.size > 5 * 1024 * 1024) {
+      setGenerationError('Bespoke template image exceeds the 5MB exposure limit.');
+      return;
+    }
+
+    const fileType = file.type.toLowerCase();
+    const fileName = file.name.toLowerCase();
+
+    const isPDF = fileType === 'application/pdf' || fileName.endsWith('.pdf');
+    const isSVG = fileType === 'image/svg+xml' || fileName.endsWith('.svg');
+    const isImage = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'].includes(fileType) ||
+                    fileName.endsWith('.png') || fileName.endsWith('.jpg') || fileName.endsWith('.jpeg') || fileName.endsWith('.webp');
+
+    if (!isPDF && !isSVG && !isImage) {
+      setGenerationError('Please upload a JPG, PNG, WEBP, SVG, or PDF file.');
+      return;
+    }
+
+    setCustomTemplateFile(file);
+    setSelectedSavedTemplateId('');
+
+    if (isPDF) {
+      try {
+        const reader = new FileReader();
+        reader.readAsArrayBuffer(file);
+        reader.onload = async (e) => {
+          try {
+            const typedarray = new Uint8Array(e.target?.result as ArrayBuffer);
+            const pdfjsLib = (window as any).pdfjsLib;
+            if (!pdfjsLib) {
+              setGenerationError('PDF.js rendering library is not fully loaded yet. Please try again.');
+              return;
+            }
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            
+            const loadingTask = pdfjsLib.getDocument({ data: typedarray });
+            const pdf = await loadingTask.promise;
+            
+            if (pdf.numPages > 1) {
+              setTemplateNotice('Only the first page of your PDF was used as the template.');
+            }
+            
+            const page = await pdf.getPage(1);
+            const viewport = page.getViewport({ scale: 2.0 }); // Use high scale for crisp image
+            
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            if (!context) {
+              setGenerationError('Could not create PDF canvas context.');
+              return;
+            }
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            
+            await page.render({
+              canvasContext: context,
+              viewport: viewport
+            }).promise;
+            
+            const dataUrl = canvas.toDataURL('image/png');
+            setCustomTemplatePreview(dataUrl);
+          } catch (err: any) {
+            console.error('[PDF CONVERT ERROR]', err);
+            setGenerationError('Failed to parse PDF. Please verify that the PDF is valid.');
+          }
+        };
+      } catch (err: any) {
+        setGenerationError('Failed to process PDF file.');
+      }
+    } else {
+      // SVG, WEBP, PNG, JPG
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (e) => {
+        if (e.target?.result) {
+          setCustomTemplatePreview(e.target.result as string);
+        } else {
+          setGenerationError('Failed to load template backdrop preview.');
+        }
+      };
+      reader.onerror = () => {
+        setGenerationError('Failed to read template backdrop file.');
+      };
+    }
+  };
+
+  const handlePexelsSearch = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!pexelsQuery.trim()) {
+      setPexelsError('Please enter a search keyword first.');
+      return;
+    }
+
+    setIsSearchingPexels(true);
+    setPexelsError(null);
+    setPexelsResults([]);
+
+    try {
+      const response = await fetch(`/api/pexels/search?query=${encodeURIComponent(pexelsQuery.trim())}`);
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Server responded with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.photos && data.photos.length > 0) {
+        setPexelsResults(data.photos);
+      } else {
+        setPexelsError('No templates found for this keyword. Try something else like "birthday" or "background".');
+      }
+    } catch (err: any) {
+      console.error('[PEXELS SEARCH ERROR]', err);
+      setPexelsError(err.message || 'Failed to search templates. Please make sure the API key is configured.');
+    } finally {
+      setIsSearchingPexels(false);
+    }
+  };
+
   const handleContinueToEditor = async () => {
     if (!selectedFile) {
       setGenerationError('Please upload a face photo first.');
       return;
     }
-    if (templateSource === 'custom' && !customTemplatePreview) {
-      setGenerationError('Please upload your custom template design background first.');
+    if ((templateSource === 'custom' || templateSource === 'search') && !customTemplatePreview) {
+      setGenerationError('Please upload or select your custom template design background first.');
       return;
     }
 
@@ -1054,7 +1184,7 @@ export default function App() {
       
       let variationsResult: string[] = [];
 
-      if (templateSource === 'custom') {
+      if (templateSource === 'custom' || templateSource === 'search') {
         if (!customTemplatePreview) {
           throw new Error('Please upload or select a custom template backdrop design first.');
         }
@@ -1068,8 +1198,8 @@ export default function App() {
           photoMode
         });
 
-        // Automatically save custom template to library if logged-in and new
-        if (activeUser && !activeUser.isAnonymous && !selectedSavedTemplateId) {
+        // Automatically save custom template to library if logged-in, new, and not from Pexels search
+        if (templateSource === 'custom' && activeUser && !activeUser.isAnonymous && !selectedSavedTemplateId) {
           setIsSavingCustomTemplate(true);
           try {
             // Compress custom template background to avoid Firestore document limits
@@ -2508,11 +2638,14 @@ export default function App() {
                               [SOURCE SELECTION] SELECT TEMPLATE ORIGIN
                             </label>
                             
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
                               {/* Option A: Built-in */}
                               <button
                                 type="button"
-                                onClick={() => setTemplateSource('built-in')}
+                                onClick={() => {
+                                  setTemplateSource('built-in');
+                                  setTemplateNotice(null);
+                                }}
                                 className={`text-left p-3.5 border transition-all flex flex-col justify-between relative overflow-hidden group ${
                                   templateSource === 'built-in'
                                     ? 'border-2 border-[#1B2A4A] bg-white shadow-[inset_0_0_0_1px_#1B2A4A]'
@@ -2539,7 +2672,10 @@ export default function App() {
                               {/* Option B: Custom Upload */}
                               <button
                                 type="button"
-                                onClick={() => setTemplateSource('custom')}
+                                onClick={() => {
+                                  setTemplateSource('custom');
+                                  setTemplateNotice(null);
+                                }}
                                 className={`text-left p-3.5 border transition-all flex flex-col justify-between relative overflow-hidden group ${
                                   templateSource === 'custom'
                                     ? 'border-2 border-[#1B2A4A] bg-white shadow-[inset_0_0_0_1px_#1B2A4A]'
@@ -2550,7 +2686,7 @@ export default function App() {
                                   <span className={`text-[10px] font-mono uppercase tracking-wider font-bold ${
                                     templateSource === 'custom' ? 'text-[#1B2A4A]' : 'text-zinc-500'
                                   }`}>
-                                    🎨 Upload your own template instead
+                                    🎨 Upload custom template
                                   </span>
                                   {templateSource === 'custom' && (
                                     <span className="text-[10px] font-mono font-bold text-[#C9822E]">
@@ -2559,7 +2695,37 @@ export default function App() {
                                   )}
                                 </div>
                                 <p className="text-[9px] text-zinc-500 uppercase font-mono leading-relaxed z-10">
-                                  Upload your own PNG/JPG template image and map the dynamic photo window.
+                                  Upload your own PNG, JPG, WEBP, SVG, or PDF template image file.
+                                </p>
+                              </button>
+
+                              {/* Option C: Search Templates */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTemplateSource('search');
+                                  setTemplateNotice(null);
+                                }}
+                                className={`text-left p-3.5 border transition-all flex flex-col justify-between relative overflow-hidden group ${
+                                  templateSource === 'search'
+                                    ? 'border-2 border-[#1B2A4A] bg-white shadow-[inset_0_0_0_1px_#1B2A4A]'
+                                    : 'border-[#E4E1D8] bg-[#FAFAF8] hover:border-[#1B2A4A]/30'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between w-full mb-1 z-10">
+                                  <span className={`text-[10px] font-mono uppercase tracking-wider font-bold ${
+                                    templateSource === 'search' ? 'text-[#1B2A4A]' : 'text-zinc-500'
+                                  }`}>
+                                    🔍 Search templates
+                                  </span>
+                                  {templateSource === 'search' && (
+                                    <span className="text-[10px] font-mono font-bold text-[#C9822E]">
+                                      [SELECTED]
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[9px] text-zinc-500 uppercase font-mono leading-relaxed z-10">
+                                  Discover and import millions of dynamic photo backdrops directly from Pexels.
                                 </p>
                               </button>
                             </div>
@@ -2567,15 +2733,15 @@ export default function App() {
                         )}
 
                         {/* Custom Template Upload & Slot Definition Tool */}
-                        {selectedFile && templateSource === 'custom' && (
+                        {selectedFile && (templateSource === 'custom' || templateSource === 'search') && (
                           <div className="space-y-4 p-4 bg-zinc-50 border border-[#E4E1D8] relative mt-4 animate-fadeIn">
                             <CornerMarks />
                             <label className="block text-xs font-mono uppercase tracking-wider text-[#1B2A4A] font-bold">
-                              [BESPOKE TEMPLATE] CONFIGURE LAYOUT
+                              {templateSource === 'custom' ? '[BESPOKE TEMPLATE] CONFIGURE LAYOUT' : '[DISCOVER BACKDROPS] SEARCH PEXELS LIBRARY'}
                             </label>
 
-                            {/* Saved Custom Templates Library for reuse */}
-                            {user && savedCustomTemplates.length > 0 && (
+                            {/* Saved Custom Templates Library (Only for uploaded templates) */}
+                            {templateSource === 'custom' && user && savedCustomTemplates.length > 0 && !customTemplatePreview && (
                               <div className="space-y-2">
                                 <span className="block text-[10px] font-mono uppercase tracking-widest text-[#1B2A4A] font-bold">
                                   📂 CHOOSE FROM YOUR PRESERVED TEMPLATES
@@ -2616,71 +2782,185 @@ export default function App() {
                                     );
                                   })}
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedSavedTemplateId('');
-                                    setCustomTemplatePreview(null);
-                                    setCustomTemplateFile(null);
-                                    setCustomTemplateSlot({ x: 25, y: 25, w: 50, h: 50 });
-                                  }}
-                                  className="text-[9px] font-mono font-bold text-[#C9822E] hover:underline uppercase tracking-tight"
-                                >
-                                  Clear / Upload a New Template Image
-                                </button>
                               </div>
                             )}
 
-                            {/* Custom Template File Upload Input Area */}
-                            {!customTemplatePreview ? (
+                            {/* Custom Template File Upload (PNG/JPG/WEBP/SVG/PDF) */}
+                            {templateSource === 'custom' && !customTemplatePreview && (
                               <div
                                 onClick={() => {
                                   const inputEl = document.getElementById('custom-template-input') as HTMLInputElement;
                                   inputEl?.click();
                                 }}
-                                className="border border-dashed border-[#E4E1D8] bg-white p-6 flex flex-col items-center justify-center cursor-pointer hover:border-[#C9822E]/45 transition-all text-center space-y-2"
+                                onDragOver={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                                    handleCustomTemplateUpload(e.dataTransfer.files[0]);
+                                  }
+                                }}
+                                className="border border-dashed border-[#E4E1D8] bg-white p-6 flex flex-col items-center justify-center cursor-pointer hover:border-[#C9822E]/45 transition-all text-center space-y-2 group"
                               >
                                 <input
                                   id="custom-template-input"
                                   type="file"
-                                  accept="image/png, image/jpeg"
+                                  accept="image/png, image/jpeg, image/webp, image/svg+xml, application/pdf, .png, .jpg, .jpeg, .webp, .svg, .pdf"
                                   className="hidden"
                                   onChange={async (e) => {
                                     if (e.target.files && e.target.files[0]) {
-                                      const file = e.target.files[0];
-                                      
-                                      // Validate file size (same 5MB limit as photo upload)
-                                      if (file.size > 5 * 1024 * 1024) {
-                                        setGenerationError('Bespoke template image exceeds the 5MB exposure limit.');
-                                        return;
-                                      }
-                                      
-                                      setCustomTemplateFile(file);
-                                      setSelectedSavedTemplateId('');
-                                      try {
-                                        const { base64, mimeType } = await compressAndPrepareImage(file);
-                                        setCustomTemplatePreview(`data:${mimeType};base64,${base64}`);
-                                        setGenerationError(null);
-                                      } catch (err: any) {
-                                        setGenerationError(err.message || 'Failed to parse bespoke template image');
-                                      }
+                                      handleCustomTemplateUpload(e.target.files[0]);
                                     }
                                   }}
                                 />
-                                <div className="bg-zinc-50 border border-[#E4E1D8] p-2.5 text-zinc-400">
+                                <div className="bg-zinc-50 border border-[#E4E1D8] p-2.5 text-zinc-400 group-hover:scale-110 transition-transform">
                                   <Upload className="h-4 w-4 text-[#1B2A4A]" />
                                 </div>
                                 <div>
                                   <p className="text-xs font-bold text-[#1B2A4A] uppercase tracking-wide">
                                     CHOOSE CUSTOM TEMPLATE BACKDROP
                                   </p>
-                                  <p className="text-[9px] font-mono text-zinc-500 mt-1 uppercase">
-                                    JPG, PNG (MAX 5MB EXPOSURE LIMIT)
+                                  <p className="text-[9px] font-mono text-zinc-500 mt-1 uppercase leading-relaxed">
+                                    Drag & drop or click to upload<br />
+                                    JPG, PNG, WEBP, SVG, or PDF (MAX 5MB)
                                   </p>
                                 </div>
                               </div>
-                            ) : (
+                            )}
+
+                            {/* Pexels Search Templates Interface */}
+                            {templateSource === 'search' && !customTemplatePreview && (
                               <div className="space-y-4">
+                                <form onSubmit={handlePexelsSearch} className="flex gap-2">
+                                  <div className="relative flex-1">
+                                    <input
+                                      type="text"
+                                      placeholder="Search backdrops (e.g., birthday, festival, gradient, professional)"
+                                      value={pexelsQuery}
+                                      onChange={(e) => setPexelsQuery(e.target.value)}
+                                      className="w-full text-xs px-3 py-2.5 rounded-none bg-white border border-[#E4E1D8] text-[#1A1918] placeholder-zinc-400 focus:outline-none focus:border-[#1B2A4A] font-mono"
+                                    />
+                                    {pexelsQuery && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setPexelsQuery('')}
+                                        className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-600 text-xs font-bold font-mono"
+                                      >
+                                        CLEAR
+                                      </button>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="submit"
+                                    disabled={isSearchingPexels}
+                                    className="px-5 bg-[#1B2A4A] text-white text-xs font-bold font-mono uppercase tracking-wider hover:bg-[#2c3d61] disabled:bg-zinc-200 disabled:text-zinc-400 transition-colors"
+                                  >
+                                    {isSearchingPexels ? 'Searching...' : 'Search'}
+                                  </button>
+                                </form>
+
+                                {/* Keyword Suggestions */}
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="text-[9px] font-mono uppercase tracking-wider text-zinc-400 mr-1">Suggestions:</span>
+                                  {['birthday', 'festival', 'professional background', 'gradient', 'abstract'].map((kw) => (
+                                    <button
+                                      key={kw}
+                                      type="button"
+                                      onClick={() => {
+                                        setPexelsQuery(kw);
+                                        // Trigger search immediately
+                                        setIsSearchingPexels(true);
+                                        setPexelsError(null);
+                                        setPexelsResults([]);
+                                        fetch(`/api/pexels/search?query=${encodeURIComponent(kw)}`)
+                                          .then(res => res.json())
+                                          .then(data => {
+                                            if (data.photos && data.photos.length > 0) {
+                                              setPexelsResults(data.photos);
+                                            } else {
+                                              setPexelsError('No templates found for this keyword.');
+                                            }
+                                          })
+                                          .catch(err => {
+                                            setPexelsError(err.message || 'Failed to search templates.');
+                                          })
+                                          .finally(() => {
+                                            setIsSearchingPexels(false);
+                                          });
+                                      }}
+                                      className="text-[9px] font-mono bg-white border border-[#E4E1D8] px-2 py-1 hover:border-[#C9822E] hover:text-[#C9822E] transition-colors uppercase"
+                                    >
+                                      {kw}
+                                    </button>
+                                  ))}
+                                </div>
+
+                                {/* Results Grid */}
+                                {isSearchingPexels && (
+                                  <div className="py-8 flex flex-col items-center justify-center space-y-2 bg-white border border-[#E4E1D8]">
+                                    <RefreshCw className="h-5 w-5 text-[#C9822E] animate-spin" />
+                                    <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider animate-pulse">
+                                      Searching Pexels Library...
+                                    </span>
+                                  </div>
+                                )}
+
+                                {pexelsError && (
+                                  <div className="p-4 bg-red-50 border border-red-200 text-red-700 text-[10px] font-mono uppercase leading-relaxed text-center">
+                                    ⚠ {pexelsError}
+                                  </div>
+                                )}
+
+                                {!isSearchingPexels && pexelsResults.length > 0 && (
+                                  <div className="space-y-1.5">
+                                    <span className="block text-[10px] font-mono uppercase tracking-widest text-zinc-400">
+                                      Select template backdrop:
+                                    </span>
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto p-1 bg-white border border-[#E4E1D8]">
+                                      {pexelsResults.map((photo: any) => (
+                                        <button
+                                          key={photo.id}
+                                          type="button"
+                                          onClick={() => {
+                                            setCustomTemplatePreview(photo.src.large || photo.src.medium);
+                                            setSelectedPexelsPhoto({
+                                              photographer: photo.photographer,
+                                              photographerUrl: photo.photographer_url,
+                                              url: photo.url
+                                            });
+                                            setGenerationError(null);
+                                          }}
+                                          className="relative aspect-square border border-[#E4E1D8] overflow-hidden hover:border-[#C9822E] transition-all bg-zinc-50 group"
+                                        >
+                                          <img
+                                            src={photo.src.small || photo.src.tiny}
+                                            alt={photo.alt || 'Pexels Template backdrop'}
+                                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                            referrerPolicy="no-referrer"
+                                          />
+                                          <div className="absolute bottom-0 inset-x-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-[8px] text-white text-center font-mono truncate">
+                                            By {photo.photographer}
+                                          </div>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Slot Mapping Tool (Runs for both custom upload and selected searched backdrop) */}
+                            {customTemplatePreview && (
+                              <div className="space-y-4">
+                                {templateNotice && (
+                                  <div className="p-3 bg-[#FEF3C7] border border-[#F59E0B]/30 text-[#D97706] text-[10px] font-mono uppercase leading-relaxed text-center font-semibold animate-pulse">
+                                    ℹ {templateNotice}
+                                  </div>
+                                )}
+
                                 {/* Interactive Resizable Slot Definition Tool */}
                                 <div className="p-3 bg-white border border-[#E4E1D8]">
                                   <span className="block text-[10px] font-mono uppercase tracking-widest text-[#1B2A4A] font-bold mb-3">
@@ -2693,9 +2973,15 @@ export default function App() {
                                   />
                                 </div>
 
+                                {templateSource === 'search' && selectedPexelsPhoto && (
+                                  <p className="text-[10px] font-mono text-zinc-500 mt-2 text-center bg-white p-2 border border-[#E4E1D8]">
+                                    📷 Photo by <a href={selectedPexelsPhoto.photographerUrl} target="_blank" rel="noreferrer" className="underline hover:text-[#C9822E] font-bold">{selectedPexelsPhoto.photographer}</a> on <a href={selectedPexelsPhoto.url} target="_blank" rel="noreferrer" className="underline hover:text-[#C9822E] font-bold">Pexels</a>
+                                  </p>
+                                )}
+
                                 <div className="flex justify-between items-center">
                                   <span className="text-[9px] font-mono text-zinc-400 uppercase tracking-tight">
-                                    {!selectedSavedTemplateId && user && !user.isAnonymous
+                                    {templateSource === 'custom' && !selectedSavedTemplateId && user && !user.isAnonymous
                                       ? '* This template layout will preserve to your personal library upon successful generation.'
                                       : ''}
                                   </span>
@@ -2705,6 +2991,8 @@ export default function App() {
                                       setSelectedSavedTemplateId('');
                                       setCustomTemplatePreview(null);
                                       setCustomTemplateFile(null);
+                                      setTemplateNotice(null);
+                                      setSelectedPexelsPhoto(null);
                                       setCustomTemplateSlot({ x: 25, y: 25, w: 50, h: 50 });
                                     }}
                                     className="text-[9px] font-mono font-bold text-rose-700 hover:underline uppercase tracking-tight"

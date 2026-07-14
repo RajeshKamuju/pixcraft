@@ -51,6 +51,51 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+// Pexels Search Proxy Route
+app.get('/api/pexels/search', async (req, res): Promise<any> => {
+  const query = req.query.query as string;
+  const page = req.query.page as string || '1';
+  const perPage = req.query.per_page as string || '20';
+
+  if (!query) {
+    return res.status(400).json({ error: 'Query parameter is required' });
+  }
+
+  const apiKey = process.env.PEXELS_API_KEY;
+  if (!apiKey) {
+    console.warn('[PEXELS API WARNING] PEXELS_API_KEY is not set in environment variables!');
+    return res.status(501).json({ 
+      error: 'Pexels API key is not configured on the server. Please add PEXELS_API_KEY to your environment variables.' 
+    });
+  }
+
+  try {
+    const url = `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&page=${page}&per_page=${perPage}`;
+    console.log(`[PEXELS API PROXY] Fetching: ${url}`);
+    
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': apiKey
+      }
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`[PEXELS API ERROR] Status ${response.status}: ${errText}`);
+      return res.status(response.status).json({ 
+        error: `Pexels API responded with status ${response.status}`, 
+        details: errText 
+      });
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err: any) {
+    console.error('[PEXELS PROXY EXCEPTION]', err);
+    return res.status(500).json({ error: 'Failed to query Pexels API', details: err.message || err });
+  }
+});
+
 // Template Generation Endpoint
 app.post('/api/generate', async (req, res): Promise<any> => {
   // Increase request timeout to 3 minutes (180000ms) to handle slow Gemini responses
