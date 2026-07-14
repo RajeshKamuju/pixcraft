@@ -67,7 +67,7 @@ export function TemplateVisualEditor({
   const [activeTab, setActiveTab] = useState<'preset' | 'text' | 'toggles'>('preset');
 
   // Selected State
-  const [selectedElement, setSelectedElement] = useState<'name' | 'caption' | null>(null);
+  const [selectedElement, setSelectedElement] = useState<'name' | 'caption' | 'borders' | 'ornaments' | 'confetti' | 'watermark' | null>(null);
   const [draggedItem, setDraggedItem] = useState<'name' | 'caption' | 'photo' | null>(null);
   const [hoveredElement, setHoveredElement] = useState<'name' | 'caption' | 'photo' | null>(null);
   const dragStartRef = useRef({ x: 0, y: 0, initX: 0, initY: 0 });
@@ -324,6 +324,70 @@ export function TemplateVisualEditor({
     };
     reader.readAsDataURL(file);
   };
+
+  // Global Keyboard Shortcuts Effect
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isInput = document.activeElement?.tagName === 'INPUT' || 
+                      document.activeElement?.tagName === 'TEXTAREA';
+      
+      // Ctrl+Z or Cmd+Z for Undo
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        handleUndo();
+      }
+      
+      // Ctrl+Y or Cmd+Y (or Cmd+Shift+Z) for Redo
+      if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+          ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')) {
+        e.preventDefault();
+        handleRedo();
+      }
+      
+      // Delete or Backspace key for removing selected text element or decorative graphic
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (!isInput && selectedElement) {
+          e.preventDefault();
+          if (selectedElement === 'name') {
+            const updated = {
+              ...settings,
+              nameElement: { ...settings.nameElement, text: '' }
+            };
+            setSettings(updated);
+            pushHistory(updated);
+          } else if (selectedElement === 'caption') {
+            const updated = {
+              ...settings,
+              captionElement: { ...settings.captionElement, text: '' }
+            };
+            setSettings(updated);
+            pushHistory(updated);
+          } else if (selectedElement === 'borders') {
+            const updated = { ...settings, showBorders: false };
+            setSettings(updated);
+            pushHistory(updated);
+          } else if (selectedElement === 'ornaments') {
+            const updated = { ...settings, showOrnaments: false };
+            setSettings(updated);
+            pushHistory(updated);
+          } else if (selectedElement === 'confetti') {
+            const updated = { ...settings, showConfetti: false };
+            setSettings(updated);
+            pushHistory(updated);
+          } else if (selectedElement === 'watermark') {
+            const updated = { ...settings, showWatermark: false };
+            setSettings(updated);
+            pushHistory(updated);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [settings, selectedElement, historyIdx, history]);
 
   // Preset background list based on style & variant
   const bgPresets = getBackgroundPresets(style, variantIdx);
@@ -695,7 +759,7 @@ export function TemplateVisualEditor({
         <div className="relative p-3 bg-zinc-50 border border-[#E4E1D8] w-full flex flex-col justify-center items-center overflow-hidden min-h-[440px] gap-4">
           <div className="absolute top-2 left-2 flex items-center gap-2 pointer-events-none z-10">
             <span className="text-[9px] font-mono text-zinc-500 bg-white/90 border border-zinc-200/60 px-1.5 py-0.5 shadow-sm">
-              ✨ Interactivity Enabled: Drag photo/text to adjust, scroll/pinch to Zoom
+              ✨ Drag photo/text to move, scroll to Zoom • shortcuts: Ctrl+Z (Undo) • Ctrl+Y (Redo) • Del (Remove selection)
             </span>
           </div>
 
@@ -925,9 +989,16 @@ export function TemplateVisualEditor({
 
           {activeTab === 'toggles' && (
             <div className="space-y-3.5">
-              <span className="text-xs font-mono font-bold text-[#1B2A4A] uppercase tracking-wider block">Visual Template Elements</span>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <label className="flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none">
+              <span className="text-xs font-mono font-bold text-[#1B2A4A] uppercase tracking-wider block">Visual Template Elements <span className="text-[10px] text-zinc-400 font-normal font-sans">(Click to select, then press "Delete" to remove)</span></span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                <div 
+                  onClick={() => setSelectedElement('borders')}
+                  className={`flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none p-2.5 border transition-all ${
+                    selectedElement === 'borders' 
+                      ? 'border-[#C9822E] bg-[#C9822E]/5 font-bold text-[#1B2A4A]' 
+                      : 'border-zinc-200 hover:border-zinc-300 bg-white'
+                  }`}
+                >
                   <input
                     type="checkbox"
                     checked={settings.showBorders}
@@ -936,12 +1007,23 @@ export function TemplateVisualEditor({
                       setSettings(updated);
                       pushHistory(updated);
                     }}
-                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0"
+                    onClick={(e) => e.stopPropagation()}
+                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0 mr-1"
                   />
                   <span>Show Borders</span>
-                </label>
+                  {selectedElement === 'borders' && (
+                    <span className="text-[8px] text-[#C9822E] font-bold ml-auto bg-[#C9822E]/10 px-1 py-0.5 font-sans">SELECTED</span>
+                  )}
+                </div>
 
-                <label className="flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none">
+                <div 
+                  onClick={() => setSelectedElement('ornaments')}
+                  className={`flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none p-2.5 border transition-all ${
+                    selectedElement === 'ornaments' 
+                      ? 'border-[#C9822E] bg-[#C9822E]/5 font-bold text-[#1B2A4A]' 
+                      : 'border-zinc-200 hover:border-zinc-300 bg-white'
+                  }`}
+                >
                   <input
                     type="checkbox"
                     checked={settings.showOrnaments}
@@ -950,12 +1032,23 @@ export function TemplateVisualEditor({
                       setSettings(updated);
                       pushHistory(updated);
                     }}
-                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0"
+                    onClick={(e) => e.stopPropagation()}
+                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0 mr-1"
                   />
-                  <span>Decorative Accents</span>
-                </label>
+                  <span>Accents</span>
+                  {selectedElement === 'ornaments' && (
+                    <span className="text-[8px] text-[#C9822E] font-bold ml-auto bg-[#C9822E]/10 px-1 py-0.5 font-sans">SELECTED</span>
+                  )}
+                </div>
 
-                <label className="flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none">
+                <div 
+                  onClick={() => setSelectedElement('confetti')}
+                  className={`flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none p-2.5 border transition-all ${
+                    selectedElement === 'confetti' 
+                      ? 'border-[#C9822E] bg-[#C9822E]/5 font-bold text-[#1B2A4A]' 
+                      : 'border-zinc-200 hover:border-zinc-300 bg-white'
+                  }`}
+                >
                   <input
                     type="checkbox"
                     checked={settings.showConfetti}
@@ -964,12 +1057,23 @@ export function TemplateVisualEditor({
                       setSettings(updated);
                       pushHistory(updated);
                     }}
-                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0"
+                    onClick={(e) => e.stopPropagation()}
+                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0 mr-1"
                   />
-                  <span>Confetti particles</span>
-                </label>
+                  <span>Confetti</span>
+                  {selectedElement === 'confetti' && (
+                    <span className="text-[8px] text-[#C9822E] font-bold ml-auto bg-[#C9822E]/10 px-1 py-0.5 font-sans">SELECTED</span>
+                  )}
+                </div>
 
-                <label className="flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none">
+                <div 
+                  onClick={() => setSelectedElement('watermark')}
+                  className={`flex items-center gap-2 font-mono text-[11px] text-zinc-700 cursor-pointer select-none p-2.5 border transition-all ${
+                    selectedElement === 'watermark' 
+                      ? 'border-[#C9822E] bg-[#C9822E]/5 font-bold text-[#1B2A4A]' 
+                      : 'border-zinc-200 hover:border-zinc-300 bg-white'
+                  }`}
+                >
                   <input
                     type="checkbox"
                     checked={settings.showWatermark}
@@ -978,10 +1082,14 @@ export function TemplateVisualEditor({
                       setSettings(updated);
                       pushHistory(updated);
                     }}
-                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0"
+                    onClick={(e) => e.stopPropagation()}
+                    className="rounded-none border-[#E4E1D8] text-[#1B2A4A] focus:ring-0 mr-1"
                   />
-                  <span>Show Watermark</span>
-                </label>
+                  <span>Watermark</span>
+                  {selectedElement === 'watermark' && (
+                    <span className="text-[8px] text-[#C9822E] font-bold ml-auto bg-[#C9822E]/10 px-1 py-0.5 font-sans">SELECTED</span>
+                  )}
+                </div>
               </div>
             </div>
           )}
