@@ -46,6 +46,18 @@ service cloud.firestore {
         && (!data.keys().hasAny(['createdAt']) || data.createdAt is int || data.createdAt is string);
     }
 
+    function isValidCustomTemplate(data) {
+      return data.keys().hasAll(['userId', 'imageUrl', 'slotX', 'slotY', 'slotWidth', 'slotHeight', 'createdAt'])
+        && data.keys().size() <= 8
+        && data.userId is string && data.userId.size() <= 128
+        && data.imageUrl is string && data.imageUrl.size() <= 5000000
+        && (data.slotX is number || data.slotX is int)
+        && (data.slotY is number || data.slotY is int)
+        && (data.slotWidth is number || data.slotWidth is int)
+        && (data.slotHeight is number || data.slotHeight is int)
+        && (data.createdAt is int || data.createdAt is string);
+    }
+
     // Collection matches
     match /users/{userId} {
       allow read: if isSignedIn(userId) && (request.auth == null || userId == request.auth.uid || isAdmin(userId));
@@ -79,6 +91,21 @@ service cloud.firestore {
         && isValidGeneration(request.resource.data);
       allow delete: if isSignedIn(resource.data.userId) 
         && isValidId(generationId) 
+        && (request.auth == null || resource.data.userId == request.auth.uid || isAdmin(resource.data.userId));
+    }
+
+    match /custom_templates/{templateId} {
+      allow read: if isSignedIn(resource.data.userId) && (request.auth == null || resource.data.userId == request.auth.uid || isAdmin(resource.data.userId));
+      allow create: if isSignedIn(request.resource.data.userId)
+        && isValidId(templateId)
+        && (request.auth == null || request.resource.data.userId == request.auth.uid)
+        && isValidCustomTemplate(request.resource.data);
+      allow update: if isSignedIn(resource.data.userId)
+        && isValidId(templateId)
+        && (request.auth == null || resource.data.userId == request.auth.uid || isAdmin(resource.data.userId))
+        && isValidCustomTemplate(request.resource.data);
+      allow delete: if isSignedIn(resource.data.userId)
+        && isValidId(templateId)
         && (request.auth == null || resource.data.userId == request.auth.uid || isAdmin(resource.data.userId));
     }
 

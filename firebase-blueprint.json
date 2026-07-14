@@ -43,9 +43,29 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "email", "signupDate", "lastLoginDate", "totalGenerations"]
+    },
+    "CustomTemplate": {
+      "title": "CustomTemplate",
+      "description": "Stores user-uploaded templates with defined slot positions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "slotX": { "type": "number" },
+        "slotY": { "type": "number" },
+        "slotWidth": { "type": "number" },
+        "slotHeight": { "type": "number" },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["userId", "imageUrl", "slotX", "slotY", "slotWidth", "slotHeight"]
     }
   },
   "firestore": {
+    "/custom_templates/{templateId}": {
+      "schema": "CustomTemplate",
+      "description": "User's uploaded custom templates and defined slot positions"
+    },
     "/generations/{generationId}": {
       "schema": "Generation",
       "description": "User's saved generated image templates and attempt logs"

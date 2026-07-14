@@ -59,6 +59,9 @@ import {
   serverTimestamp
 } from 'firebase/firestore';
 import { TemplateStyle, Template, Generation } from './types';
+import { generateClientSideTemplate, generateCustomClientSideTemplate } from './utils/canvasGenerator';
+import { TemplateVisualEditor } from './components/TemplateVisualEditor';
+import { SlotDefinitionEditor } from './components/SlotDefinitionEditor';
 
 interface ExtendedTemplate extends Template {
   frameNum: string;
@@ -143,14 +146,31 @@ export default function App() {
 
   // Form States (Workspace)
   const [selectedStyle, setSelectedStyle] = useState<TemplateStyle>('festival');
+  const [templateSource, setTemplateSource] = useState<'built-in' | 'custom'>('built-in');
+  const [customTemplateFile, setCustomTemplateFile] = useState<File | null>(null);
+  const [customTemplatePreview, setCustomTemplatePreview] = useState<string | null>(null);
+  const [customTemplateSlot, setCustomTemplateSlot] = useState<{ x: number; y: number; w: number; h: number }>({
+    x: 25,
+    y: 25,
+    w: 50,
+    h: 50,
+  });
+  const [savedCustomTemplates, setSavedCustomTemplates] = useState<any[]>([]);
+  const [selectedSavedTemplateId, setSelectedSavedTemplateId] = useState<string>('');
+  const [isSavingCustomTemplate, setIsSavingCustomTemplate] = useState<boolean>(false);
+
   const [nameInput, setNameInput] = useState('');
   const [captionInput, setCaptionInput] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [rawImageSrc, setRawImageSrc] = useState<string>('');
   const [portraitFilter, setPortraitFilter] = useState<'none' | 'monochrome' | 'sepia' | 'high-contrast'>('none');
   const [photoMode, setPhotoMode] = useState<'face' | 'object'>('face');
 
   // UI Output States
+  const [workspaceStep, setWorkspaceStep] = useState<'configure' | 'edit' | 'final'>('configure');
+  const [hasConfirmedCustomSlot, setHasConfirmedCustomSlot] = useState<boolean>(false);
+  const [editedResultUrl, setEditedResultUrl] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
@@ -396,6 +416,32 @@ export default function App() {
       setUserHistory(fetched);
     }, (error) => {
       console.error("Error reading user history:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 3b. Real-time Subscription to User's Saved Custom Templates
+  useEffect(() => {
+    if (!user) {
+      setSavedCustomTemplates([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'custom_templates'),
+      where('userId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const templatesList: any[] = [];
+      snapshot.forEach((doc) => {
+        templatesList.push({ id: doc.id, ...doc.data() });
+      });
+      setSavedCustomTemplates(templatesList);
+    }, (err) => {
+      console.warn("Saved custom templates read failed (could be missing collection or index):", err);
     });
 
     return () => unsubscribe();
@@ -768,6 +814,176 @@ export default function App() {
     });
   };
 
+  const compressGeneratedImageForDatabase = (pngDataUrl: string, quality = 0.75, maxEdge = 800): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > maxEdge || height > maxEdge) {
+          if (width > height) {
+            height = Math.round((height * maxEdge) / width);
+            width = maxEdge;
+          } else {
+            width = Math.round((width * maxEdge) / height);
+            width = maxEdge;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } else {
+          resolve(pngDataUrl);
+        }
+      };
+      img.onerror = () => {
+        resolve(pngDataUrl);
+      };
+      img.src = pngDataUrl;
+    });
+  };
+
+  const handleContinueToEditor = async () => {
+    if (!selectedFile) {
+      setGenerationError('Please upload a face photo first.');
+      return;
+    }
+    if (templateSource === 'custom' && !customTemplatePreview) {
+      setGenerationError('Please upload your custom template design background first.');
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerationError(null);
+    try {
+      const { base64: base64Data, mimeType: compressedMimeType } = await compressAndPrepareImage(selectedFile);
+      const imageSrc = `data:${compressedMimeType};base64,${base64Data}`;
+      setRawImageSrc(imageSrc);
+      
+      // If custom template style is used, we set hasConfirmedCustomSlot based on whether customTemplateSlot exists.
+      // But we will let the user explicitly drag and confirm it.
+      setHasConfirmedCustomSlot(false);
+      
+      setWorkspaceStep('edit');
+    } catch (err: any) {
+      console.error(err);
+      setGenerationError(err.message || 'Could not load your image into the editor workspace.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleDoneEditing = async () => {
+    if (!editedResultUrl) {
+      setGenerationError('No edited print found to export.');
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerationError(null);
+
+    let activeUser = user;
+    let generationDocRef: any = null;
+
+    try {
+      if (!activeUser) {
+        try {
+          const anonymousCredential = await signInAnonymously(auth);
+          activeUser = anonymousCredential.user;
+          setUser(activeUser);
+        } catch (err: any) {
+          console.warn("Using mock guest fallback during finalization:", err);
+          const guestId = 'guest_' + Math.random().toString(36).substr(2, 9);
+          activeUser = {
+            uid: guestId,
+            email: null,
+            displayName: 'Guest Creator',
+            isAnonymous: true,
+            isMock: true
+          };
+          localStorage.setItem('pixcraft_mock_user', JSON.stringify(activeUser));
+          setUser(activeUser);
+        }
+      }
+
+      // Automatically save custom template to library if logged-in and new
+      if (templateSource === 'custom' && activeUser && !activeUser.isAnonymous && !selectedSavedTemplateId && customTemplatePreview) {
+        setIsSavingCustomTemplate(true);
+        try {
+          const dbTemplateUrl = await compressGeneratedImageForDatabase(customTemplatePreview);
+          await addDoc(collection(db, 'custom_templates'), {
+            userId: activeUser.uid,
+            imageUrl: dbTemplateUrl,
+            slotX: customTemplateSlot.x,
+            slotY: customTemplateSlot.y,
+            slotWidth: customTemplateSlot.w,
+            slotHeight: customTemplateSlot.h,
+            createdAt: Date.now()
+          });
+        } catch (err) {
+          console.warn("Could not save custom template design to Firestore library:", err);
+        } finally {
+          setIsSavingCustomTemplate(false);
+        }
+      }
+
+      // Compress edited image for database to avoid Firestore limit
+      const dbImageUrl = await compressGeneratedImageForDatabase(editedResultUrl);
+
+      // Create the successful log document in Generations history
+      generationDocRef = await addDoc(collection(db, 'generations'), {
+        userId: activeUser.uid,
+        templateType: templateSource === 'custom' ? 'custom' : selectedStyle,
+        timestamp: new Date().toISOString(),
+        status: 'success',
+        errorType: null,
+        imageUrl: dbImageUrl,
+        templateStyle: templateSource === 'custom' ? 'custom' : selectedStyle,
+        name: nameInput || 'UNTITLED PRINT',
+        caption: captionInput,
+        createdAt: Date.now(),
+        photoMode: photoMode
+      });
+
+      // Increment totalGenerations in users collection:
+      const userDocRef = doc(db, 'users', activeUser.uid);
+      await updateDoc(userDocRef, {
+        totalGenerations: increment(1)
+      }).catch((err) => {
+        console.warn("Could not increment totalGenerations on user:", err);
+      });
+
+      if (!hasGeneratedOnce) {
+        await updateDoc(userDocRef, {
+          hasGeneratedOnce: true
+        }).catch((err) => {
+          console.warn("Could not update hasGeneratedOnce on user document:", err);
+        });
+        setHasGeneratedOnce(true);
+      }
+
+      // Transition App view to show the final result
+      setVariations([editedResultUrl]);
+      setActiveVariationIdx(0);
+      setWorkspaceStep('final');
+
+    } catch (err: any) {
+      console.error('Finalizing print failed:', err);
+      setGenerationError(err.message || 'Emulsion failed to finalize the print.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const handleGenerate = async () => {
     console.log("Generate clicked. selectedFile present:", !!selectedFile);
     if (!selectedFile) {
@@ -818,12 +1034,12 @@ export default function App() {
       // Create the pending log document
       generationDocRef = await addDoc(collection(db, 'generations'), {
         userId: activeUser.uid,
-        templateType: selectedStyle,
+        templateType: templateSource === 'custom' ? 'custom' : selectedStyle,
         timestamp: new Date().toISOString(),
         status: 'pending',
         errorType: null,
         imageUrl: '',
-        templateStyle: selectedStyle,
+        templateStyle: templateSource === 'custom' ? 'custom' : selectedStyle,
         name: nameInput || 'UNTITLED PRINT',
         caption: captionInput,
         createdAt: Date.now(),
@@ -831,77 +1047,87 @@ export default function App() {
       });
 
       const { base64: base64Data, mimeType: compressedMimeType } = await compressAndPrepareImage(selectedFile);
+      const imageSrc = `data:${compressedMimeType};base64,${base64Data}`;
+      setRawImageSrc(imageSrc);
 
-      // Log the full request payload being sent to the backend proxy
-      console.log("Sending API request payload to /api/generate:", {
-        imagePresent: !!base64Data,
-        imageLength: base64Data ? base64Data.length : 0,
-        mimeType: compressedMimeType,
-        templateStyle: selectedStyle,
-        name: nameInput,
-        caption: captionInput,
-        photoMode: photoMode
-      });
+      console.log("Generating templates client-side on canvas...");
+      
+      let variationsResult: string[] = [];
 
-      const response = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: base64Data,
-          mimeType: compressedMimeType,
+      if (templateSource === 'custom') {
+        if (!customTemplatePreview) {
+          throw new Error('Please upload or select a custom template backdrop design first.');
+        }
+
+        variationsResult = await generateCustomClientSideTemplate({
+          portraitSrc: imageSrc,
+          templateSrc: customTemplatePreview,
+          slot: customTemplateSlot,
+          name: nameInput,
+          caption: captionInput,
+          photoMode
+        });
+
+        // Automatically save custom template to library if logged-in and new
+        if (activeUser && !activeUser.isAnonymous && !selectedSavedTemplateId) {
+          setIsSavingCustomTemplate(true);
+          try {
+            // Compress custom template background to avoid Firestore document limits
+            const dbTemplateUrl = await compressGeneratedImageForDatabase(customTemplatePreview);
+            await addDoc(collection(db, 'custom_templates'), {
+              userId: activeUser.uid,
+              imageUrl: dbTemplateUrl,
+              slotX: customTemplateSlot.x,
+              slotY: customTemplateSlot.y,
+              slotWidth: customTemplateSlot.w,
+              slotHeight: customTemplateSlot.h,
+              createdAt: Date.now()
+            });
+          } catch (err) {
+            console.warn("Could not save custom template design to Firestore library:", err);
+          } finally {
+            setIsSavingCustomTemplate(false);
+          }
+        }
+      } else {
+        variationsResult = await generateClientSideTemplate({
+          imageSrc,
           templateStyle: selectedStyle,
           name: nameInput,
           caption: captionInput,
-          photoMode: photoMode
-        }),
-      });
-
-      let data;
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        data = await response.json();
-      } else {
-        const textResponse = await response.text().catch(() => '');
-        console.error('Non-JSON response received:', textResponse);
-        const errorObj = new Error('Our chemical darkroom encountered an integration error. Please retry.') as any;
-        errorObj.status = response.status;
-        errorObj.details = textResponse;
-        throw errorObj;
+          photoMode
+        });
       }
 
-      if (!response.ok) {
-        const errMsg = data?.error || 'A developer failure occurred during rendering.';
-        const errorObj = new Error(errMsg) as any;
-        errorObj.status = response.status;
-        errorObj.details = data?.details || errMsg;
-        errorObj.stack = data?.stack || new Error().stack;
-        throw errorObj;
-      }
-
-      if (!data.variations || data.variations.length === 0) {
+      if (!variationsResult || variationsResult.length === 0) {
         throw new Error('Emulsion failed to capture variations. Please supply another portrait.');
       }
 
-      setVariations(data.variations);
+      setVariations(variationsResult);
       setActiveVariationIdx(0);
 
       // Succeeded! Update document
       if (generationDocRef) {
+        // Compress the image specifically for database storage to avoid Firestore 1MB document limits
+        const dbImageUrl = await compressGeneratedImageForDatabase(variationsResult[0]);
+
         await updateDoc(generationDocRef, {
           status: 'success',
-          imageUrl: data.variations[0]
+          imageUrl: dbImageUrl
         });
 
         // Add secondary variations as successful records if there are multiple
-        for (let i = 1; i < data.variations.length; i++) {
+        for (let i = 1; i < variationsResult.length; i++) {
+          const dbVarImageUrl = await compressGeneratedImageForDatabase(variationsResult[i]);
+
           await addDoc(collection(db, 'generations'), {
             userId: activeUser.uid,
-            templateType: selectedStyle,
+            templateType: templateSource === 'custom' ? 'custom' : selectedStyle,
             timestamp: new Date().toISOString(),
             status: 'success',
             errorType: null,
-            imageUrl: data.variations[i],
-            templateStyle: selectedStyle,
+            imageUrl: dbVarImageUrl,
+            templateStyle: templateSource === 'custom' ? 'custom' : selectedStyle,
             name: nameInput ? `${nameInput} (Var ${i+1})` : `UNTITLED PRINT (Var ${i+1})`,
             caption: captionInput,
             createdAt: Date.now(),
@@ -1760,14 +1986,196 @@ export default function App() {
             
             <AnimatePresence mode="wait">
               {!showHistoryTab ? (
-                /* MAIN 3-STEP GENERATOR PANEL */
-                <motion.div 
-                  key="generator"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
-                >
+                workspaceStep === 'edit' ? (
+                  /* EDIT STEP WORKSPACE */
+                  <motion.div
+                    key="generator-edit"
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="max-w-4xl mx-auto space-y-6"
+                  >
+                    {/* Header Controls for Editing Step */}
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-[#E4E1D8] pb-4 gap-4">
+                      <div>
+                        <span className="text-[9px] font-mono uppercase bg-[#C9822E]/15 text-[#C9822E] px-2 py-0.5 font-bold tracking-widest">
+                          STEP 02 OF 03: INTERACTIVE CANVAS STUDIO
+                        </span>
+                        <h2 className="text-xl font-bold uppercase tracking-tight text-[#1B2A4A] mt-1.5 font-display">
+                          {templateSource === 'custom' ? 'Bespoke Mapped Template' : `${TEMPLATES.find(t => t.id === selectedStyle)?.label} Studio`}
+                        </h2>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWorkspaceStep('configure');
+                          }}
+                          className="px-4 py-2 border border-[#E4E1D8] text-zinc-600 hover:bg-zinc-50 font-mono text-[10px] font-bold uppercase tracking-wider transition-all"
+                        >
+                          ◀ Back to Config
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDoneEditing}
+                          className="px-5 py-2 bg-[#1B2A4A] text-white hover:bg-[#121c33] font-mono text-[10px] font-bold uppercase tracking-widest shadow-md transition-all animate-pulse"
+                        >
+                          Done & Finalize ▶
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Custom Template Slot Definiter Modal Prompt */}
+                    {templateSource === 'custom' && !hasConfirmedCustomSlot ? (
+                      <div className="border border-[#E4E1D8] p-6 bg-[#FAFAF8] space-y-6 text-center max-w-md mx-auto relative">
+                        <CornerMarks />
+                        <div className="space-y-2">
+                          <h3 className="text-sm font-bold uppercase text-[#1B2A4A] tracking-wider font-mono">
+                            ▲ DEFINE YOUR PHOTO WINDOW
+                          </h3>
+                          <p className="text-[10px] uppercase text-zinc-500 leading-relaxed max-w-xs mx-auto">
+                            Drag and resize the custom box below to indicate precisely where your photo should composite into your bespoke template.
+                          </p>
+                        </div>
+
+                        <div className="p-4 bg-white border border-[#E4E1D8] rounded-none">
+                          <SlotDefinitionEditor
+                            imageUrl={customTemplatePreview || ''}
+                            slot={customTemplateSlot}
+                            onChange={setCustomTemplateSlot}
+                          />
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setHasConfirmedCustomSlot(true)}
+                          className="w-full py-3 bg-[#C9822E] hover:bg-[#b06f23] text-white text-xs font-mono font-bold uppercase tracking-widest transition-all shadow-md"
+                        >
+                          Confirm Frame Position & Open Editor ✦
+                        </button>
+                      </div>
+                    ) : (
+                      /* Main Visual Editor Workspace */
+                      <div className="bg-white border border-[#E4E1D8] p-5 relative">
+                        <CornerMarks />
+                        <TemplateVisualEditor
+                          imageSrc={rawImageSrc}
+                          style={templateSource === 'custom' ? 'custom' : selectedStyle}
+                          variantIdx={0}
+                          initialName={nameInput}
+                          initialCaption={captionInput}
+                          customTemplatePreview={customTemplatePreview}
+                          customTemplateSlot={customTemplateSlot}
+                          onUpdate={(newBase64) => {
+                            setEditedResultUrl(newBase64);
+                          }}
+                          onReplacePhoto={(newPhotoBase64) => {
+                            setRawImageSrc(newPhotoBase64);
+                          }}
+                        />
+                      </div>
+                    )}
+                  </motion.div>
+                ) : workspaceStep === 'final' ? (
+                  /* STEP 03: FINAL RESULT & DOWNLOAD */
+                  <motion.div
+                    key="generator-final"
+                    initial={{ opacity: 0, scale: 0.98 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="max-w-2xl mx-auto space-y-6"
+                  >
+                    <div className="flex justify-between items-center border-b border-[#E4E1D8] pb-4">
+                      <div>
+                        <span className="text-[9px] font-mono uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 font-bold tracking-widest font-bold">
+                          STEP 03 OF 03: EXPOSURE COMPLETE
+                        </span>
+                        <h2 className="text-xl font-bold uppercase tracking-tight text-[#1B2A4A] mt-1.5 font-display">
+                          Your Finished Print
+                        </h2>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWorkspaceStep('configure');
+                          setEditedResultUrl('');
+                        }}
+                        className="px-4 py-2 bg-[#1B2A4A] hover:bg-[#121c33] text-white font-mono text-[10px] font-bold uppercase tracking-wider transition-all"
+                      >
+                        ◀ Create New Print
+                      </button>
+                    </div>
+
+                    <div className="border border-[#E4E1D8] p-6 bg-[#FAFAF8] flex flex-col items-center gap-6 relative">
+                      <CornerMarks />
+                      
+                      {/* Final Composite Image Preview */}
+                      <div className="max-w-md w-full border border-zinc-200 shadow-xl bg-white select-none">
+                        <img
+                          src={variations[0]}
+                          alt="Finished composite print"
+                          className="w-full h-auto block"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-2.5 w-full max-w-md font-mono text-xs">
+                        <div className="flex items-center gap-3 w-full">
+                          <button
+                            onClick={() => handleDownload(variations[0])}
+                            className="flex-1 bg-[#C9822E] hover:bg-[#b06f23] text-white py-3 font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors"
+                          >
+                            <Download className="h-4 w-4" /> DOWNLOAD PRINT
+                          </button>
+                          <button
+                            onClick={() => handleDownload(variations[0], { highRes: true })}
+                            className="flex-1 bg-[#1B2A4A] hover:bg-[#121c33] text-white py-3 font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors"
+                          >
+                            <BadgeCheck className="h-4 w-4 text-[#C9822E]" /> EXPORT HI-RES RAW
+                          </button>
+                        </div>
+                        <button
+                          onClick={() => handleExportPDF(variations[0])}
+                          disabled={isExportingPDF}
+                          className="w-full bg-[#8B2E2E] hover:bg-[#722222] disabled:bg-[#8B2E2E]/50 text-white py-3 font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          {isExportingPDF ? (
+                            <>
+                              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                              EXPORTING PDF...
+                            </>
+                          ) : (
+                            <>
+                              <FileText className="h-4 w-4 text-[#C9822E]" /> EXPORT HIGH-QUALITY PDF
+                            </>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleCopyToClipboard(variations[0])}
+                          className="w-full border border-[#1B2A4A] hover:bg-[#1B2A4A]/5 text-[#1B2A4A] py-2.5 font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          {copySuccess ? (
+                            <>
+                              <Check className="h-4 w-4 text-[#C9822E]" />
+                              <span className="text-[#C9822E]">COPIED TO CLIPBOARD</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-4 w-4" /> COPY RAW BASE64
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : (
+                  /* MAIN 3-STEP GENERATOR PANEL */
+                  <motion.div 
+                    key="generator"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
+                  >
                   {/* Left Controls */}
                   <div className="lg:col-span-5 space-y-6">
                     <div className="border border-[#E4E1D8] p-5 sm:p-6 space-y-6 bg-white relative">
@@ -2091,6 +2499,223 @@ export default function App() {
                             </div>
                           </div>
                         )}
+
+                        {/* Choice of Template Source */}
+                        {selectedFile && (
+                          <div className="space-y-3 p-4 bg-[#FAFAF8] border border-[#E4E1D8] relative mt-4">
+                            <CornerMarks />
+                            <label className="block text-xs font-mono uppercase tracking-wider text-[#1B2A4A] font-bold">
+                              [SOURCE SELECTION] SELECT TEMPLATE ORIGIN
+                            </label>
+                            
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                              {/* Option A: Built-in */}
+                              <button
+                                type="button"
+                                onClick={() => setTemplateSource('built-in')}
+                                className={`text-left p-3.5 border transition-all flex flex-col justify-between relative overflow-hidden group ${
+                                  templateSource === 'built-in'
+                                    ? 'border-2 border-[#1B2A4A] bg-white shadow-[inset_0_0_0_1px_#1B2A4A]'
+                                    : 'border-[#E4E1D8] bg-[#FAFAF8] hover:border-[#1B2A4A]/30'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between w-full mb-1 z-10">
+                                  <span className={`text-[10px] font-mono uppercase tracking-wider font-bold ${
+                                    templateSource === 'built-in' ? 'text-[#1B2A4A]' : 'text-zinc-500'
+                                  }`}>
+                                    ⚡ Continue with {TEMPLATES.find(t => t.id === selectedStyle)?.label || 'Festival Greeting'}
+                                  </span>
+                                  {templateSource === 'built-in' && (
+                                    <span className="text-[10px] font-mono font-bold text-[#C9822E]">
+                                      [SELECTED]
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[9px] text-zinc-500 uppercase font-mono leading-relaxed z-10">
+                                  Use the beautifully formatted, preset darkroom templates of PixCraft.
+                                </p>
+                              </button>
+
+                              {/* Option B: Custom Upload */}
+                              <button
+                                type="button"
+                                onClick={() => setTemplateSource('custom')}
+                                className={`text-left p-3.5 border transition-all flex flex-col justify-between relative overflow-hidden group ${
+                                  templateSource === 'custom'
+                                    ? 'border-2 border-[#1B2A4A] bg-white shadow-[inset_0_0_0_1px_#1B2A4A]'
+                                    : 'border-[#E4E1D8] bg-[#FAFAF8] hover:border-[#1B2A4A]/30'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between w-full mb-1 z-10">
+                                  <span className={`text-[10px] font-mono uppercase tracking-wider font-bold ${
+                                    templateSource === 'custom' ? 'text-[#1B2A4A]' : 'text-zinc-500'
+                                  }`}>
+                                    🎨 Upload your own template instead
+                                  </span>
+                                  {templateSource === 'custom' && (
+                                    <span className="text-[10px] font-mono font-bold text-[#C9822E]">
+                                      [SELECTED]
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[9px] text-zinc-500 uppercase font-mono leading-relaxed z-10">
+                                  Upload your own PNG/JPG template image and map the dynamic photo window.
+                                </p>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Custom Template Upload & Slot Definition Tool */}
+                        {selectedFile && templateSource === 'custom' && (
+                          <div className="space-y-4 p-4 bg-zinc-50 border border-[#E4E1D8] relative mt-4 animate-fadeIn">
+                            <CornerMarks />
+                            <label className="block text-xs font-mono uppercase tracking-wider text-[#1B2A4A] font-bold">
+                              [BESPOKE TEMPLATE] CONFIGURE LAYOUT
+                            </label>
+
+                            {/* Saved Custom Templates Library for reuse */}
+                            {user && savedCustomTemplates.length > 0 && (
+                              <div className="space-y-2">
+                                <span className="block text-[10px] font-mono uppercase tracking-widest text-[#1B2A4A] font-bold">
+                                  📂 CHOOSE FROM YOUR PRESERVED TEMPLATES
+                                </span>
+                                <div className="grid grid-cols-4 gap-2">
+                                  {savedCustomTemplates.map((savedTpl) => {
+                                    const isSelected = selectedSavedTemplateId === savedTpl.id;
+                                    return (
+                                      <button
+                                        key={savedTpl.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedSavedTemplateId(savedTpl.id);
+                                          setCustomTemplatePreview(savedTpl.imageUrl);
+                                          setCustomTemplateSlot({
+                                            x: savedTpl.slotX,
+                                            y: savedTpl.slotY,
+                                            w: savedTpl.slotWidth,
+                                            h: savedTpl.slotHeight,
+                                          });
+                                        }}
+                                        className={`relative aspect-square border overflow-hidden p-1 bg-white transition-all ${
+                                          isSelected
+                                            ? 'border-[#C9822E] ring-2 ring-[#C9822E]/30'
+                                            : 'border-[#E4E1D8] hover:border-zinc-400'
+                                        }`}
+                                      >
+                                        <img
+                                          src={savedTpl.imageUrl}
+                                          alt="Saved Custom template"
+                                          className="w-full h-full object-cover pointer-events-none"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                        <div className="absolute bottom-0 inset-x-0 bg-black/55 text-[6px] text-center text-white py-0.5 truncate uppercase font-mono">
+                                          {new Date(savedTpl.createdAt).toLocaleDateString()}
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedSavedTemplateId('');
+                                    setCustomTemplatePreview(null);
+                                    setCustomTemplateFile(null);
+                                    setCustomTemplateSlot({ x: 25, y: 25, w: 50, h: 50 });
+                                  }}
+                                  className="text-[9px] font-mono font-bold text-[#C9822E] hover:underline uppercase tracking-tight"
+                                >
+                                  Clear / Upload a New Template Image
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Custom Template File Upload Input Area */}
+                            {!customTemplatePreview ? (
+                              <div
+                                onClick={() => {
+                                  const inputEl = document.getElementById('custom-template-input') as HTMLInputElement;
+                                  inputEl?.click();
+                                }}
+                                className="border border-dashed border-[#E4E1D8] bg-white p-6 flex flex-col items-center justify-center cursor-pointer hover:border-[#C9822E]/45 transition-all text-center space-y-2"
+                              >
+                                <input
+                                  id="custom-template-input"
+                                  type="file"
+                                  accept="image/png, image/jpeg"
+                                  className="hidden"
+                                  onChange={async (e) => {
+                                    if (e.target.files && e.target.files[0]) {
+                                      const file = e.target.files[0];
+                                      
+                                      // Validate file size (same 5MB limit as photo upload)
+                                      if (file.size > 5 * 1024 * 1024) {
+                                        setGenerationError('Bespoke template image exceeds the 5MB exposure limit.');
+                                        return;
+                                      }
+                                      
+                                      setCustomTemplateFile(file);
+                                      setSelectedSavedTemplateId('');
+                                      try {
+                                        const { base64, mimeType } = await compressAndPrepareImage(file);
+                                        setCustomTemplatePreview(`data:${mimeType};base64,${base64}`);
+                                        setGenerationError(null);
+                                      } catch (err: any) {
+                                        setGenerationError(err.message || 'Failed to parse bespoke template image');
+                                      }
+                                    }
+                                  }}
+                                />
+                                <div className="bg-zinc-50 border border-[#E4E1D8] p-2.5 text-zinc-400">
+                                  <Upload className="h-4 w-4 text-[#1B2A4A]" />
+                                </div>
+                                <div>
+                                  <p className="text-xs font-bold text-[#1B2A4A] uppercase tracking-wide">
+                                    CHOOSE CUSTOM TEMPLATE BACKDROP
+                                  </p>
+                                  <p className="text-[9px] font-mono text-zinc-500 mt-1 uppercase">
+                                    JPG, PNG (MAX 5MB EXPOSURE LIMIT)
+                                  </p>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="space-y-4">
+                                {/* Interactive Resizable Slot Definition Tool */}
+                                <div className="p-3 bg-white border border-[#E4E1D8]">
+                                  <span className="block text-[10px] font-mono uppercase tracking-widest text-[#1B2A4A] font-bold mb-3">
+                                    ▲ MAP CHOSEN PHOTO WINDOW
+                                  </span>
+                                  <SlotDefinitionEditor
+                                    imageUrl={customTemplatePreview}
+                                    slot={customTemplateSlot}
+                                    onChange={setCustomTemplateSlot}
+                                  />
+                                </div>
+
+                                <div className="flex justify-between items-center">
+                                  <span className="text-[9px] font-mono text-zinc-400 uppercase tracking-tight">
+                                    {!selectedSavedTemplateId && user && !user.isAnonymous
+                                      ? '* This template layout will preserve to your personal library upon successful generation.'
+                                      : ''}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedSavedTemplateId('');
+                                      setCustomTemplatePreview(null);
+                                      setCustomTemplateFile(null);
+                                      setCustomTemplateSlot({ x: 25, y: 25, w: 50, h: 50 });
+                                    }}
+                                    className="text-[9px] font-mono font-bold text-rose-700 hover:underline uppercase tracking-tight"
+                                  >
+                                    Reset Template Backdrop
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       {/* Step 3: Overlay Details */}
@@ -2151,13 +2776,11 @@ export default function App() {
                       {/* Submit Action Button */}
                       <button
                         type="button"
-                        onClick={handleGenerate}
-                        disabled={isGenerating || !selectedFile || !selectedStyle}
+                        onClick={handleContinueToEditor}
+                        disabled={isGenerating || !selectedFile || (templateSource === 'custom' && !customTemplatePreview)}
                         className={`w-full py-3.5 text-xs font-bold font-mono uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${
-                          (isGenerating || !selectedFile || !selectedStyle)
-                            ? isGenerating 
-                              ? 'bg-[#C9822E]/30 text-white cursor-wait' 
-                              : 'bg-zinc-100 text-zinc-400 cursor-not-allowed border border-[#E4E1D8]'
+                          (isGenerating || !selectedFile || (templateSource === 'custom' && !customTemplatePreview))
+                            ? 'bg-zinc-100 text-zinc-400 cursor-not-allowed border border-[#E4E1D8]'
                             : 'bg-[#C9822E] hover:bg-[#b06f23] text-white cursor-pointer'
                         }`}
                       >
@@ -2169,7 +2792,7 @@ export default function App() {
                         ) : (
                           <>
                             <Sparkles className="h-4 w-4" />
-                            GENERATE {TEMPLATES.find(t => t.id === selectedStyle)?.label.toUpperCase() || 'TEMPLATE'} ({photoMode === 'face' ? 'FACE PHOTO' : 'OBJECT PHOTO'})
+                            CONTINUE TO EDITOR ✦
                           </>
                         )}
                       </button>
@@ -2235,15 +2858,24 @@ export default function App() {
                               animate={{ opacity: 1, scale: 1 }}
                               className="w-full flex flex-col items-center gap-5"
                             >
-                              <div className="relative p-3 bg-[#FAFAF8] border border-[#E4E1D8] max-w-md w-full">
-                                <CornerMarks />
-                                <div className="bg-white border border-[#E4E1D8] overflow-hidden relative">
-                                  <img 
-                                    src={variations[activeVariationIdx]} 
-                                    alt="Developed Print" 
-                                    className="w-full h-auto object-contain max-h-[420px] mx-auto block"
-                                  />
-                                </div>
+                              <div className="w-full max-w-xl">
+                                <TemplateVisualEditor
+                                  imageSrc={rawImageSrc || variations[activeVariationIdx] || ''}
+                                  style={selectedStyle}
+                                  variantIdx={activeVariationIdx}
+                                  initialName={nameInput}
+                                  initialCaption={captionInput}
+                                  onUpdate={(newBase64) => {
+                                    setVariations(prev => {
+                                      const n = [...prev];
+                                      n[activeVariationIdx] = newBase64;
+                                      return n;
+                                    });
+                                  }}
+                                  onReplacePhoto={(newPhotoBase64) => {
+                                    setRawImageSrc(newPhotoBase64);
+                                  }}
+                                />
                               </div>
 
                               <div className="flex flex-col gap-2.5 w-full max-w-md font-mono text-xs">
@@ -2332,6 +2964,7 @@ export default function App() {
                   </div>
 
                 </motion.div>
+                )
               ) : (
                 /* EXPOSED NEGATIVES ARCHIVE VIEW */
                 <motion.div 
